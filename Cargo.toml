@@ -1,0 +1,13 @@
+[package]
+authors = ["Colin Stearns <cstearns@developers.wyyerd.com>"]
+name = "opa"
+version = "0.1.0"
+[dependencies]
+failure = "*"
+futures = "*"
+reqwest = "*"
+serde = "*"
+serde_derive = "*"
+serde_json = "*"
+tokio = "*"
+try_future = "*"

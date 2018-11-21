@@ -1,0 +1,4 @@
+{
+    "users": ["alice","bob","carol","daniel"],
+    "restricted": ["carol","daniel"]
+}
