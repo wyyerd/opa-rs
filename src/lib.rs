@@ -16,12 +16,14 @@ use futures::future::{self, Either};
 use reqwest::async::Client as HttpClient;
 use reqwest::async::{Body, Response};
 
+use std::sync::Arc;
+
 pub type Result<T> = ::std::result::Result<T, Error>;
 
-
+#[derive(Clone)]
 pub struct Client {
     client: HttpClient,
-    addr: reqwest::Url,
+    addr: Arc<reqwest::Url>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,22 +37,25 @@ struct Output<T> {
 }
 
 impl Client {
-    pub fn new(address: &'static str, version: u32) -> Result<Client> {
-        let url = Url::parse(address)?.join(&format!("v{}/", version))?;
+    pub fn new(address: &str) -> Result<Client> {
+        let url = Url::parse(address)?.join("v1/")?;
         Ok(Client {
             client: HttpClient::new(),
-            addr: url,
+            addr: Arc::new(url),
         })
     }
 
-    pub fn query<Q: Query>(&self, query: Q, input: &Q::Input) -> impl Future<Item=Q::Output, Error=Error> {
-        let url: Url = try_future!(self.addr.join("data/").and_then(|url| url.join(query.path())));
-        let req: String = try_future!(serde_json::to_string(&Input { input }));
+    pub fn query<Q: Query>(&self, input: &Q::Input) -> impl Future<Item=Q::Output, Error=Error> {
+        self.query_raw::<Q::Input, Q::Output>(Q::path(), input)
+    }
 
+    pub fn query_raw<I: Serialize, O: DeserializeOwned>(&self, route: &str, input: &I) -> impl Future<Item=O, Error=Error> {
+        let url: Url = try_future!(self.addr.join("data/").and_then(|url| url.join(route)));
+        let req: String = try_future!(serde_json::to_string(&Input { input }));
         self.client.post(url)
             .body(req)
             .send()
-            .and_then(|mut resp| resp.json::<Output<Q::Output>>())
+            .and_then(|mut resp| resp.json::<Output<O>>())
             .map(|output| output.result)
             .from_err().into()
     }
@@ -96,7 +101,7 @@ impl Client {
 pub trait Query {
     type Input: Serialize;
     type Output: DeserializeOwned;
-    fn path(&self) -> &'static str;
+    fn path() -> &'static str;
 }
 
 
@@ -156,7 +161,7 @@ mod tests {
         type Input = TestInput;
         type Output = bool;
 
-        fn path(&self) -> &'static str {
+        fn path() -> &'static str {
             "test_policy/allow"
         }
     }
@@ -171,11 +176,11 @@ mod tests {
         runtime.block_on(client.set_data(data, "test_policy")).unwrap();
         runtime.block_on(client.set_policy(policy, "test_policy")).unwrap();
 
-        let alice_allowed = runtime.block_on(client.query(TestQuery, &TestInput { user: "alice".to_owned() })).unwrap();
-        let carol_allowed = runtime.block_on(client.query(TestQuery, &TestInput { user: "carol".to_owned() })).unwrap();
+        let alice_allowed = client.query::<TestQuery>(&TestInput { user: "alice".to_owned() });
+        let carol_allowed = client.query::<TestQuery>(&TestInput { user: "carol".to_owned() });
 
-        assert!(alice_allowed);
-        assert!(!carol_allowed);
+        assert!(runtime.block_on(alice_allowed).unwrap());
+        assert!(!runtime.block_on(carol_allowed).unwrap());
 
         runtime.shutdown_now();
     }
