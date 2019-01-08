@@ -172,7 +172,7 @@ mod tests {
         let policy = include_str!("../test_policy/policy.rego");
 
         let mut runtime = Runtime::new().unwrap();
-        let client = Client::new("http://localhost:8181", 1).unwrap();
+        let client = Client::new("http://localhost:8181").unwrap();
         runtime.block_on(client.set_data(data, "test_policy")).unwrap();
         runtime.block_on(client.set_policy(policy, "test_policy")).unwrap();
 
