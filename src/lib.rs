@@ -87,11 +87,19 @@ impl Client {
             .into()
     }
 
-    pub fn check_health(&self) -> impl Future<Item=(), Error=Error> {
-        self.client.get((*self.addr).clone())
+    /// `route` allows you to check that specific policies or namespaces exist on the server
+    pub fn check_health(&self, route: &str) -> impl Future<Item=(), Error=Error> {
+        let url: Url = try_future!(self.addr.join("data/").and_then(|url| url.join(route)));
+        let route = route.to_owned();
+        self.client.get(url)
             .send()
+            .and_then(|mut resp| resp.json::<Output<serde_json::Value>>())
             .from_err()
-            .and_then(|r| Client::handle_err(r))
+            .and_then(move |output| match output {
+                Output::Empty {} => Err(Error::Opa(format!("No Policies found for {}", route))),
+                Output::Result { .. } => Ok(())
+            })
+            .into()
     }
 
     fn handle_err(response: Response) -> impl Future<Item=(), Error=Error> {
