@@ -32,8 +32,10 @@ struct Input<T> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct Output<T> {
-    result: T,
+#[serde(untagged)]
+enum Output<T> {
+    Result { result: T },
+    Empty {},
 }
 
 impl Client {
@@ -52,12 +54,17 @@ impl Client {
     pub fn query_raw<I: Serialize, O: DeserializeOwned>(&self, route: &str, input: &I) -> impl Future<Item=O, Error=Error> {
         let url: Url = try_future!(self.addr.join("data/").and_then(|url| url.join(route)));
         let req: String = try_future!(serde_json::to_string(&Input { input }));
+        let route_name = route.to_owned();
         self.client.post(url)
             .body(req)
             .send()
             .and_then(|mut resp| resp.json::<Output<O>>())
-            .map(|output| output.result)
-            .from_err().into()
+            .from_err()
+            .and_then(move |output| match output {
+                Output::Empty {} => Err(Error::Opa(format!("No Policy found for {}", route_name))),
+                Output::Result { result } => Ok(result)
+            })
+            .into()
     }
 
     pub fn set_policy<P: Into<Body>>(&self, policy: P, policy_path: &str) -> impl Future<Item=(), Error=Error> {
@@ -78,6 +85,13 @@ impl Client {
             .from_err()
             .and_then(|r| Client::handle_err(r))
             .into()
+    }
+
+    pub fn check_health(&self) -> impl Future<Item=(), Error=Error> {
+        self.client.get((*self.addr).clone())
+            .send()
+            .from_err()
+            .and_then(|r| Client::handle_err(r))
     }
 
     fn handle_err(response: Response) -> impl Future<Item=(), Error=Error> {
