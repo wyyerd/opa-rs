@@ -77,7 +77,11 @@ impl Client {
             .into()
     }
 
-    pub fn set_data<D: Into<Body>>(&self, data: D, data_path: &str) -> impl Future<Item=(), Error=Error> {
+    pub fn set_data<D: Serialize>(&self, data: &D, data_path: &str) -> impl Future<Item=(), Error=Error> {
+        self.set_data_raw(try_future!(serde_json::to_vec(data)), data_path).into()
+    }
+
+    pub fn set_data_raw<D: Into<Body>>(&self, data: D, data_path: &str) -> impl Future<Item=(), Error=Error> {
         let url: Url = try_future!(self.addr.join("data/").and_then(|url| url.join(data_path)));
         self.client.put(url)
             .body(data)
