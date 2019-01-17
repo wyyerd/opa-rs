@@ -23,7 +23,7 @@ pub type Result<T> = ::std::result::Result<T, Error>;
 #[derive(Clone)]
 pub struct Client {
     client: HttpClient,
-    addr: Arc<reqwest::Url>,
+    addr: Arc<(String, Url)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,42 +33,42 @@ struct Input<T> {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-enum Output<T> {
+pub enum Output<T> {
     Result { result: T },
     Empty {},
 }
 
 impl Client {
     pub fn new(address: &str) -> Result<Client> {
-        let url = Url::parse(address)?.join("v1/")?;
+        let url = Url::parse(address)?;
         Ok(Client {
             client: HttpClient::new(),
-            addr: Arc::new(url),
+            addr: Arc::new((address.to_owned(), url)),
         })
     }
 
-    pub fn query<Q: Query>(&self, input: &Q::Input) -> impl Future<Item=Q::Output, Error=Error> {
-        self.query_raw::<Q::Input, Q::Output>(Q::path(), input)
+    pub fn query<I: Serialize, O: DeserializeOwned>(&self, route: &str, input: &I) -> impl Future<Item=O, Error=Error> {
+        let route = route.to_owned();
+        self.query_raw::<I, O>(&route, input)
+            .and_then(move |output| match output {
+                Output::Empty {} => Err(Error::Opa(format!("No Policy found for {}", route))),
+                Output::Result { result } => Ok(result)
+            })
     }
 
-    pub fn query_raw<I: Serialize, O: DeserializeOwned>(&self, route: &str, input: &I) -> impl Future<Item=O, Error=Error> {
-        let url: Url = try_future!(self.addr.join("data/").and_then(|url| url.join(route)));
+    pub fn query_raw<I: Serialize, O: DeserializeOwned>(&self, route: &str, input: &I) -> impl Future<Item=Output<O>, Error=Error> {
+        let url: Url = try_future!(self.url().join("v1/data/").and_then(|url| url.join(route)));
         let req: String = try_future!(serde_json::to_string(&Input { input }));
-        let route_name = route.to_owned();
         self.client.post(url)
             .body(req)
             .send()
             .and_then(|mut resp| resp.json::<Output<O>>())
             .from_err()
-            .and_then(move |output| match output {
-                Output::Empty {} => Err(Error::Opa(format!("No Policy found for {}", route_name))),
-                Output::Result { result } => Ok(result)
-            })
             .into()
     }
 
     pub fn set_policy<P: Into<Body>>(&self, policy: P, policy_path: &str) -> impl Future<Item=(), Error=Error> {
-        let url: Url = try_future!(self.addr.join("policies/").and_then(|url| url.join(policy_path)));
+        let url: Url = try_future!(self.url().join("v1/policies/").and_then(|url| url.join(policy_path)));
         self.client.put(url)
             .body(policy)
             .send()
@@ -82,7 +82,7 @@ impl Client {
     }
 
     pub fn set_data_raw<D: Into<Body>>(&self, data: D, data_path: &str) -> impl Future<Item=(), Error=Error> {
-        let url: Url = try_future!(self.addr.join("data/").and_then(|url| url.join(data_path)));
+        let url: Url = try_future!(self.url().join("v1/data/").and_then(|url| url.join(data_path)));
         self.client.put(url)
             .body(data)
             .send()
@@ -93,7 +93,7 @@ impl Client {
 
     /// `route` allows you to check that specific policies or namespaces exist on the server
     pub fn check_health(&self, route: &str) -> impl Future<Item=(), Error=Error> {
-        let url: Url = try_future!(self.addr.join("data/").and_then(|url| url.join(route)));
+        let url: Url = try_future!(self.url().join("v1/data/").and_then(|url| url.join(route)));
         let route = route.to_owned();
         self.client.get(url)
             .send()
@@ -104,6 +104,24 @@ impl Client {
                 Output::Result { .. } => Ok(())
             })
             .into()
+    }
+
+    pub fn delete_policy(&self, policy_id: &str) -> impl Future<Item=(), Error=Error> {
+        let url: Url = try_future!(self.url().join("v1/policies/").and_then(|url| url.join(policy_id)));
+        self.client.delete(url)
+            .send()
+            .and_then(|resp| resp.error_for_status())
+            .map(|_| ())
+            .from_err()
+            .into()
+    }
+
+    pub fn url(&self) -> &Url {
+        &(*self.addr).1
+    }
+    
+    pub fn addr(&self) -> &String {
+        &(*self.addr).0
     }
 
     fn handle_err(response: Response) -> impl Future<Item=(), Error=Error> {
@@ -181,17 +199,6 @@ mod tests {
         user: String
     }
 
-    struct TestQuery;
-
-    impl Query for TestQuery {
-        type Input = TestInput;
-        type Output = bool;
-
-        fn path() -> &'static str {
-            "test_policy/allow"
-        }
-    }
-
     #[test]
     fn it_works() {
         let data = include_str!("../test_policy/data.json");
@@ -199,11 +206,11 @@ mod tests {
 
         let mut runtime = Runtime::new().unwrap();
         let client = Client::new("http://localhost:8181").unwrap();
-        runtime.block_on(client.set_data(data, "test_policy")).unwrap();
+        runtime.block_on(client.set_data(&data, "test_policy")).unwrap();
         runtime.block_on(client.set_policy(policy, "test_policy")).unwrap();
 
-        let alice_allowed = client.query::<TestQuery>(&TestInput { user: "alice".to_owned() });
-        let carol_allowed = client.query::<TestQuery>(&TestInput { user: "carol".to_owned() });
+        let alice_allowed = client.query::<_, bool>("test_policy/allow", &TestInput { user: "alice".to_owned() });
+        let carol_allowed = client.query::<_, bool>("test_policy/allow", &TestInput { user: "carol".to_owned() });
 
         assert!(runtime.block_on(alice_allowed).unwrap());
         assert!(!runtime.block_on(carol_allowed).unwrap());
