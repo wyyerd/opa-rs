@@ -38,6 +38,12 @@ pub enum Output<T> {
     Empty {},
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct PolicyData {
+    id: String,
+
+}
+
 impl Client {
     pub fn new(address: &str) -> Result<Client> {
         let url = Url::parse(address)?;
@@ -113,6 +119,19 @@ impl Client {
             .and_then(|resp| resp.error_for_status())
             .map(|_| ())
             .from_err()
+            .into()
+    }
+
+    /// Returns a vec of policy IDs
+    pub fn get_policies(&self) -> impl Future<Item=Vec<String>, Error=Error> {
+        self.client.get(try_future!(self.url().join("v1/policies")))
+            .send()
+            .and_then(|mut resp| resp.json::<Output<Vec<PolicyData>>>())
+            .from_err()
+            .and_then(|output| match output {
+                Output::Empty {} => Err(Error::Opa(format!("No Policy data found"))),
+                Output::Result { result } => Ok(result.into_iter().map(|d| d.id).collect())
+            })
             .into()
     }
 
