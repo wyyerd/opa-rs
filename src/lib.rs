@@ -13,8 +13,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use futures::prelude::*;
 use futures::future::{self, Either};
 
-use reqwest::async::Client as HttpClient;
-use reqwest::async::{Body, Response};
+use reqwest::r#async::Client as HttpClient;
+use reqwest::r#async::{Body, Response};
 
 use std::sync::Arc;
 
@@ -114,6 +114,16 @@ impl Client {
 
     pub fn delete_policy(&self, policy_id: &str) -> impl Future<Item=(), Error=Error> {
         let url: Url = try_future!(self.url().join("v1/policies/").and_then(|url| url.join(policy_id)));
+        self.client.delete(url)
+            .send()
+            .and_then(|resp| resp.error_for_status())
+            .map(|_| ())
+            .from_err()
+            .into()
+    }
+
+    pub fn delete_data(&self, data_path: &str) -> impl Future<Item=(), Error=Error> {
+        let url: Url = try_future!(self.url().join("v1/data/").and_then(|url| url.join(data_path)));
         self.client.delete(url)
             .send()
             .and_then(|resp| resp.error_for_status())
@@ -225,14 +235,17 @@ mod tests {
 
         let mut runtime = Runtime::new().unwrap();
         let client = Client::new("http://localhost:8181").unwrap();
-        runtime.block_on(client.set_data(&data, "test_policy")).unwrap();
+        runtime.block_on(client.set_data(&data, "test_data")).unwrap();
         runtime.block_on(client.set_policy(policy, "test_policy")).unwrap();
 
-        let alice_allowed = client.query::<_, bool>("test_policy/allow", &TestInput { user: "alice".to_owned() });
-        let carol_allowed = client.query::<_, bool>("test_policy/allow", &TestInput { user: "carol".to_owned() });
+        let alice_allowed = runtime.block_on(client.query::<_, bool>("test_policy/allow", &TestInput { user: "alice".to_owned() })).unwrap();
+        let carol_allowed = runtime.block_on(client.query::<_, bool>("test_policy/allow", &TestInput { user: "carol".to_owned() })).unwrap();
 
-        assert!(runtime.block_on(alice_allowed).unwrap());
-        assert!(!runtime.block_on(carol_allowed).unwrap());
+//        runtime.block_on(client.delete_policy("test_policy")).unwrap();
+//        runtime.block_on(client.delete_data("test_data")).unwrap();
+
+        assert!(alice_allowed);
+        assert!(!carol_allowed);
 
         runtime.shutdown_now();
     }
